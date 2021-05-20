@@ -1,0 +1,12 @@
+/fetch.db
+/.idea
+/.idea/.gitignore
+/tmp/build-errors.log
+/.idea/dataSources.xml
+/.idea/fetch-rewards.iml
+/tmp/main
+/.idea/modules.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/sqldialects.xml
+/.idea/vcs.xml
+dist/

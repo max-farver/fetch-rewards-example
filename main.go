@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fetch-rewards/server"
 	"fetch-rewards/services"
-	"fmt"
 	"github.com/go-playground/validator/v10"
 	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
@@ -13,8 +12,6 @@ import (
 )
 
 func main() {
-	fmt.Println("30")
-
 	ctx, contextCancel := context.WithCancel(context.Background())
 	defer contextCancel()
 
@@ -36,14 +33,22 @@ func main() {
 		return
 	}
 
-	logger, _ := zap.NewDevelopment()
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{
+		"./logs/example.log",
+	}
+	logger, err := cfg.Build()
+	if err != nil {
+		log.Printf("%q: %s\n", err, dbSchema)
+		return
+	}
 	defer logger.Sync()
 	sugar := logger.Sugar()
 
 	api := &server.Server{
-		Ctx: ctx,
-		DB: db,
-		Logger: sugar,
+		Ctx:       ctx,
+		DB:        db,
+		Logger:    sugar,
 		Validator: validator.New(),
 
 		PointsService: &services.PointsService{Ctx: ctx, DB: db},
