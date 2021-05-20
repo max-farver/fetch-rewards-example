@@ -10,3 +10,4 @@
 /.idea/sqldialects.xml
 /.idea/vcs.xml
 dist/
+**/.DS_Store
