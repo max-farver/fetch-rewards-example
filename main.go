@@ -6,25 +6,29 @@ import (
 	"fetch-rewards/server"
 	"fetch-rewards/services"
 	"github.com/go-playground/validator/v10"
-	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
 	"log"
+	_ "modernc.org/sqlite"
+	"os"
+	"path"
 )
 
 func main() {
 	ctx, contextCancel := context.WithCancel(context.Background())
 	defer contextCancel()
 
-	db, err := sql.Open("sqlite3", "fetch.db")
+	db, err := sql.Open("sqlite", "fetch.db")
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 
 	dbSchema := `
 		CREATE TABLE IF NOT EXISTS fetch_rewards (
-			payer varchar(255) NOT NULL,
-			points int NOT NULL,
-			timestamp datetime NOT NULL
+		    id INTEGER PRIMARY KEY AUTOINCREMENT,
+			payer VARCHAR(255) NOT NULL,
+			remaining_points INTEGER NOT NULL,
+			timestamp DATETIME NOT NULL,
+			points INTEGER NOT NULL
 		)`
 
 	_, err = db.Exec(dbSchema)
@@ -33,10 +37,22 @@ func main() {
 		return
 	}
 
-	cfg := zap.NewProductionConfig()
-	cfg.OutputPaths = []string{
-		"./logs/example.log",
+	// Setup logger
+	cwd, err := os.Getwd()
+	logDirPath := path.Join(cwd, "logs")
+	err = os.Mkdir(logDirPath, 0755)
+	if err != nil {
+		log.Printf(err.Error())
 	}
+
+	logFilePath := path.Join(logDirPath, "example.log")
+	_, err = os.Create(logFilePath)
+	if err != nil {
+		log.Printf(err.Error())
+	}
+
+	cfg := zap.NewDevelopmentConfig()
+	cfg.OutputPaths = []string{logFilePath}
 	logger, err := cfg.Build()
 	if err != nil {
 		log.Printf("%q: %s\n", err, dbSchema)

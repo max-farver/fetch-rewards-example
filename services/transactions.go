@@ -8,46 +8,55 @@ import (
 	"time"
 )
 
-type PointsService struct{
+type PointsService struct {
 	Ctx context.Context
 	DB  *sql.DB
 }
 
+// Add a new transaction to the database.
 func (p *PointsService) Add(t common.Transaction) error {
 	tx, err := p.DB.Begin()
 	if err != nil {
 		err = common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
+		return common.Wrap(err, "Internal Server Error")
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO fetch_rewards(payer, points, timestamp) VALUES(?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO fetch_rewards(payer, remaining_points, timestamp, points) VALUES(?, ?, ?, ?)")
 	if err != nil {
 		err = common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
+		return common.Wrap(err, "Internal Server Error")
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(t.Payer, t.Points, t.Timestamp)
+	_, err = stmt.Exec(t.Payer, t.Points, t.Timestamp, t.Points)
 	if err != nil {
 		err := common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
+		return common.Wrap(err, "Internal Server Error")
 	}
 
 	err = tx.Commit()
 	if err != nil {
 		err := common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
+		return common.Wrap(err, "Internal Server Error")
+	}
+
+	if t.Points < 0 {
+		_, err = p.Spend(-1 * t.Points)
+		if err != nil {
+			return common.BadRequest.New("Balance cannot be negative")
+		}
 	}
 
 	return nil
 }
 
+// Spend points.
 func (p *PointsService) Spend(a int) ([]common.SpendingDetail, error) {
 	remainingPointsInTransaction := a
 
 	balances, err := p.Balance()
 	newBalances := make(map[string]int)
-	for k,v := range balances {
+	for k, v := range balances {
 		newBalances[k] = v
 	}
 
@@ -55,33 +64,41 @@ func (p *PointsService) Spend(a int) ([]common.SpendingDetail, error) {
 		return []common.SpendingDetail{}, err
 	}
 
-	rows, err := p.DB.Query(`SELECT payer, points FROM fetch_rewards ORDER BY timestamp DESC`)
+	rows, err := p.DB.Query(`SELECT id, payer, remaining_points FROM fetch_rewards WHERE remaining_points > 0 ORDER BY timestamp`)
 	if err != nil {
 		err := common.NoType.New(err.Error())
 		_ = common.Wrap(err, "Internal Server Error")
-		return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
+		return []common.SpendingDetail{}, common.NoType.New("Internal Server Error")
 	}
 
 	var result []common.SpendingDetail
-	for rows.Next() && remainingPointsInTransaction > 0 {
+	updatedRemainingPoints := make(map[int]int)
+	for rows.Next() {
+		var id int
 		var payer string
-		var points int
-		err = rows.Scan(&payer, &points)
+		var remainingPoints int
+		err = rows.Scan(&id, &payer, &remainingPoints)
 		if err != nil {
 			err := common.NoType.New(err.Error())
 			_ = common.Wrap(err, "Internal Server Error")
-			return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
+			return []common.SpendingDetail{}, common.NoType.New("Internal Server Error")
 		}
 
-		if remainingPointsInTransaction <= balances[payer] {
-			newBalances[payer] -= remainingPointsInTransaction
+		if remainingPointsInTransaction <= remainingPoints {
+			newBalances[payer] = newBalances[payer] - remainingPointsInTransaction
+			updatedRemainingPoints[id] = remainingPoints - remainingPointsInTransaction
 			remainingPointsInTransaction = 0
 		} else {
-			remainingPointsInTransaction -= newBalances[payer]
-			newBalances[payer] = 0
+			remainingPointsInTransaction = remainingPointsInTransaction - remainingPoints
+			newBalances[payer] = newBalances[payer] - remainingPoints
+			updatedRemainingPoints[id] = 0
 		}
 	}
 	rows.Close()
+
+	if remainingPointsInTransaction > 0 {
+		return []common.SpendingDetail{}, common.BadRequest.New("Insufficient points")
+	}
 
 	for k, v := range balances {
 		if newBalances[k] < v {
@@ -89,42 +106,22 @@ func (p *PointsService) Spend(a int) ([]common.SpendingDetail, error) {
 		}
 	}
 
-	tx, err := p.DB.Begin()
+	err = p.insertSpendingTransactions(result)
 	if err != nil {
-		err := common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
-		return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
+		return []common.SpendingDetail{}, err
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO fetch_rewards(payer, points, timestamp) VALUES(?, ?, ?)")
+	err = p.updatedRemainingPoints(updatedRemainingPoints)
 	if err != nil {
-		err := common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
-		return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
-	}
-	defer stmt.Close()
-
-	for _, sd := range result {
-		_, err = stmt.Exec(sd.Payer, sd.Points, time.Now())
-		if err != nil {
-			err := common.NoType.New(err.Error())
-			_ = common.Wrap(err, "Internal Server Error")
-			return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		err := common.NoType.New(err.Error())
-		_ = common.Wrap(err, "Internal Server Error")
-		return []common.SpendingDetail{}, common.NoType.New("Failed to retrieve balances")
+		return []common.SpendingDetail{}, err
 	}
 
 	return result, nil
 }
 
+// Balance gets the current balance for every payer with a non-zero balance.
 func (p *PointsService) Balance() (map[string]int, error) {
-	rows, err := p.DB.Query("SELECT payer, SUM(POINTS) FROM fetch_rewards GROUP BY payer")
+	rows, err := p.DB.Query("SELECT payer, SUM(remaining_points) FROM fetch_rewards WHERE remaining_points > 0 GROUP BY payer")
 	if err != nil {
 		return map[string]int{}, common.NoType.New("Failed to retrieve balances")
 	}
@@ -142,4 +139,76 @@ func (p *PointsService) Balance() (map[string]int, error) {
 	}
 
 	return result, nil
+}
+
+// insertSpendingTransactions creates transactions for the amount of points used from each payer.
+func (p *PointsService) insertSpendingTransactions(sd []common.SpendingDetail) error {
+	tx, err := p.DB.Begin()
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO fetch_rewards(payer, remaining_points, timestamp, points) VALUES(?, ?, ?, ?)")
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+	defer stmt.Close()
+
+	for _, sd := range sd {
+		_, err = stmt.Exec(sd.Payer, sd.Points, time.Now(), sd.Points)
+		if err != nil {
+			err := common.NoType.New(err.Error())
+			_ = common.Wrap(err, "Internal Server Error")
+			return common.NoType.New("Internal Server Error")
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+
+	return nil
+}
+
+// updatedRemainingPoints udjusts the amount of points available for transactions.
+func (p *PointsService) updatedRemainingPoints(updatedRemainingPoints map[int]int) error {
+	tx, err := p.DB.Begin()
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+
+	stmt, err := tx.Prepare("UPDATE fetch_rewards SET remaining_points = ? WHERE id = ? ")
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+	defer stmt.Close()
+
+	for id, remaining := range updatedRemainingPoints {
+		_, err = stmt.Exec(remaining, id)
+		if err != nil {
+			err := common.NoType.New(err.Error())
+			_ = common.Wrap(err, "Internal Server Error")
+			return common.NoType.New("Internal Server Error")
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		err := common.NoType.New(err.Error())
+		_ = common.Wrap(err, "Internal Server Error")
+		return common.NoType.New("Internal Server Error")
+	}
+
+	return nil
 }

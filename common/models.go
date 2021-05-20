@@ -3,8 +3,8 @@ package common
 import "time"
 
 type Transaction struct {
-	Payer string `json:"payer" validate:"required"`
-	Points int `json:"points" validate:"required,gt=0"`
+	Payer     string    `json:"payer" validate:"required"`
+	Points    int       `json:"points" validate:"required"`
 	Timestamp time.Time `json:"timestamp" validate:"required"`
 }
 
@@ -13,7 +13,6 @@ type SpendingRequest struct {
 }
 
 type SpendingDetail struct {
-	Payer string `json:"payer"`
-	Points int `json:"points"`
+	Payer  string `json:"payer"`
+	Points int    `json:"points"`
 }
-
