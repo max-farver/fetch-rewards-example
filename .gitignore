@@ -11,3 +11,4 @@
 /.idea/vcs.xml
 dist/
 **/.DS_Store
+/logs/example.log
