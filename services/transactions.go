@@ -121,7 +121,7 @@ func (p *PointsService) Spend(a int) ([]common.SpendingDetail, error) {
 
 // Balance gets the current balance for every payer with a non-zero balance.
 func (p *PointsService) Balance() (map[string]int, error) {
-	rows, err := p.DB.Query("SELECT payer, SUM(remaining_points) FROM fetch_rewards WHERE remaining_points > 0 GROUP BY payer")
+	rows, err := p.DB.Query("SELECT payer, SUM(remaining_points) FROM fetch_rewards WHERE remaining_points >= 0 GROUP BY payer")
 	if err != nil {
 		return map[string]int{}, common.NoType.New("Failed to retrieve balances")
 	}
